@@ -1,18 +1,9 @@
-"""
-╔══════════════════════════════════════════════════════════════════╗
-║           MIND CASH — BOT ADMIN TELEGRAM  v2                    ║
-║  Corrections :                                                   ║
-║    - Dépôt d'activation ne crédite PAS le solde disponible      ║
-║    - Dépôt d'activation n'apparaît PAS dans le total gagné      ║
-║  Nouveautés :                                                    ║
-║    - Gestion des publicités (ajouter / lister / désactiver)     ║
-╚══════════════════════════════════════════════════════════════════╝
-"""
-
 import logging
+import os
 from datetime import datetime
-
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -30,14 +21,19 @@ from telegram.ext import (
 )
 
 # ══════════════════════════════════════════════════════════════════
-#  ⚙️  CONFIGURATION
+#  ⚙️  CONFIGURATION — Variables d'environnement
 # ══════════════════════════════════════════════════════════════════
-BOT_TOKEN    = "8699686526:AAFTfGF0z4DTnP0i2gE5fzFOHDVLPQxalmY"
-SUPABASE_URL = "https://cmvlqaiibbtswgalgtvz.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNtdmxxYWlpYmJ0c3dnYWxndHZ6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTU4MDUyNywiZXhwIjoyMDkxMTU2NTI3fQ.2oFv-Q-UhdWu1MwELO9H8qcLDElYArIiH87tGcEoKHc"   # ← clé service_role !
+load_dotenv()
 
-ADMIN_IDS     = [6445294939]
-FRAIS_PERCENT = 5
+BOT_TOKEN    = os.getenv("BOT_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+ADMIN_IDS    = list(map(int, filter(None, os.getenv("ADMIN_IDS", "").split(","))))
+FRAIS_PERCENT = int(os.getenv("FRAIS_PERCENT", "5"))
+
+# Vérification des variables d'environnement
+if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("❌ Variables d'environnement manquantes. Vérifiez votre fichier .env")
 
 # ── États du ConversationHandler (ajout pub) ──────────────────────
 AD_TITLE, AD_DESC, AD_ICON, AD_DURATION, AD_REWARD, AD_LINK = range(6)
@@ -276,24 +272,6 @@ async def show_deposit_detail(query, dep_id: str):
 
 
 async def validate_deposit(query, dep_id: str):
-    """
-    ╔═══════════════════════════════════════════════════════════════╗
-    ║  CORRECTION BUG SOLDE                                        ║
-    ║                                                               ║
-    ║  AVANT (bugué) :                                             ║
-    ║   → increment_balance() pour TOUT dépôt                      ║
-    ║   → La transaction 'deposit' comptait dans le total gagné    ║
-    ║                                                               ║
-    ║  APRÈS (corrigé) :                                           ║
-    ║   → Dépôt d'activation (is_activation=True) :               ║
-    ║       ✗ PAS de crédit au solde disponible                    ║
-    ║       ✗ Transaction requalifiée en type 'activation'         ║
-    ║         → exclue du calcul "total gagné" sur le site         ║
-    ║   → Dépôt normal (is_activation=False) :                    ║
-    ║       ✓ Crédit au solde disponible                           ║
-    ║       ✓ Transaction comptée normalement                      ║
-    ╚═══════════════════════════════════════════════════════════════╝
-    """
     res = (
         sb.table("deposits")
         .select("*, users(id, name, phone, ref_code, referred_by, is_active)")
@@ -311,24 +289,15 @@ async def validate_deposit(query, dep_id: str):
     u      = d.get("users") or {}
     is_act = d.get("is_activation", False)
 
-    # 1. Marquer le dépôt comme validé
     sb.table("deposits").update({"status": "success"}).eq("id", dep_id).execute()
 
     if is_act:
-        # ── DÉPÔT D'ACTIVATION ────────────────────────────────────
-        # Requalifier la transaction en 'activation' pour l'exclure
-        # du calcul "total gagné" (loadStats sur le site filtre
-        # sur neq('type','withdraw') → il faut aussi exclure 'activation')
         sb.table("transactions").update({"status": "success", "type": "activation"}) \
           .eq("user_id", uid).eq("type", "deposit").eq("status", "pending").execute()
 
-        # NE PAS créditer le solde (c'est un frais d'entrée)
-
-        # Activer le compte si pas encore actif
         if not u.get("is_active"):
             sb.table("users").update({"is_active": True}).eq("id", uid).execute()
 
-            # Bonus parrain Niveau 1 (+2 000 FCFA)
             parent_id = u.get("referred_by")
             if parent_id:
                 sb.rpc("increment_balance", {"uid": parent_id, "amount": 2000}).execute()
@@ -340,7 +309,6 @@ async def validate_deposit(query, dep_id: str):
                     "meta":    {"level": 1, "from_user": uid, "from_name": u.get("name")}
                 }).execute()
 
-                # Bonus parrain Niveau 2 (+700 FCFA)
                 p2 = sb.table("users").select("referred_by").eq("id", parent_id).single().execute()
                 gp_id = (p2.data or {}).get("referred_by")
                 if gp_id:
@@ -359,7 +327,6 @@ async def validate_deposit(query, dep_id: str):
             "au solde disponible (c'est un frais d'entrée unique).</i>"
         )
     else:
-        # ── DÉPÔT NORMAL → créditer le solde ─────────────────────
         sb.table("transactions").update({"status": "success"}) \
           .eq("user_id", uid).eq("type", "deposit").eq("status", "pending").execute()
         sb.rpc("increment_balance", {"uid": uid, "amount": amount}).execute()
@@ -699,7 +666,6 @@ async def show_stats(query):
     w_ok   = sum(x.get("net_amount", 0) for x in w_all if x["status"] == "success")
     w_pend = sum(1 for x in w_all if x["status"] == "pending")
 
-    # Exclure 'activation' et 'withdraw' du total des gains
     tx_all     = sb.table("transactions").select("type, amount, status").execute().data or []
     bonus_t    = sum(x["amount"] for x in tx_all if x["type"] == "bonus"    and x["status"] == "success")
     ad_t       = sum(x["amount"] for x in tx_all if x["type"] == "ad"       and x["status"] == "success")
@@ -822,7 +788,6 @@ async def delete_ad(query, ad_id: str):
 
 # ══════════════════════════════════════════════════════════════════
 #  📢 AJOUT D'UNE PUB — ConversationHandler (6 étapes)
-#  Titre → Description → Icône → Durée → Récompense → Lien
 # ══════════════════════════════════════════════════════════════════
 async def ads_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -978,7 +943,6 @@ async def ads_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ConversationHandler pour l'ajout de pub (prioritaire)
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(ads_add_start, pattern="^ads_add_start$")],
         states={
@@ -996,7 +960,6 @@ def main():
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu",  cmd_menu))
-    # Handlers de confirmation/annulation AVANT le router général
     app.add_handler(CallbackQueryHandler(ads_confirm, pattern="^ads_confirm$"))
     app.add_handler(CallbackQueryHandler(ads_cancel,  pattern="^ads_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_handler))
