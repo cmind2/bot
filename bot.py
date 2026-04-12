@@ -21,6 +21,11 @@ from telegram.ext import (
 )
 
 # ══════════════════════════════════════════════════════════════════
+#  ⚙️  KEEP ALIVE — Import du serveur Flask
+# ══════════════════════════════════════════════════════════════════
+from keep_alive import keep_alive
+
+# ══════════════════════════════════════════════════════════════════
 #  ⚙️  CONFIGURATION — Variables d'environnement
 # ══════════════════════════════════════════════════════════════════
 load_dotenv()
@@ -28,7 +33,7 @@ load_dotenv()
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-ADMIN_IDS    = list(map(int, filter(None, os.getenv("ADMIN_IDS", "").split(","))))
+ADMIN_CHAT_ID = list(map(int, filter(None, os.getenv("ADMIN_CHAT_ID", "").split(","))))
 FRAIS_PERCENT = int(os.getenv("FRAIS_PERCENT", "5"))
 
 # Vérification des variables d'environnement
@@ -51,7 +56,7 @@ sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 #  HELPERS
 # ══════════════════════════════════════════════════════════════════
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return user_id in ADMIN_CHAT_ID
 
 
 def fmt(amount) -> str:
@@ -941,6 +946,11 @@ async def ads_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 def main():
+    # ─── Démarrage du serveur keep_alive ───────────────────────────
+    keep_alive()
+    logger.info("🌐 Serveur keep_alive démarré sur le port 8080")
+    # ───────────────────────────────────────────────────────────────
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
