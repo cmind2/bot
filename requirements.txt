@@ -1,4 +1,4 @@
-python-telegram-bot==21.3
+python-telegram-bot==21.10
 supabase==2.5.1
 python-dotenv==1.0.1
 flask==3.0.3
