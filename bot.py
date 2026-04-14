@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -946,13 +947,17 @@ async def ads_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ══════════════════════════════════════════════════════════════════
 def main():
-    # ─── Démarrage du serveur keep_alive ───────────────────────────
-    keep_alive()
-    logger.info("🌐 Serveur keep_alive démarré sur le port 8080")
+    # ─── Démarrage du serveur keep_alive dans un thread daemon ────
+    # CORRECTION : Flask tourne dans un thread séparé pour ne pas
+    # bloquer la boucle asyncio de python-telegram-bot (Python 3.10+)
+    t = threading.Thread(target=keep_alive, daemon=True)
+    t.start()
+    logger.info("🌐 Serveur keep_alive démarré dans un thread daemon")
     # ───────────────────────────────────────────────────────────────
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # CORRECTION : per_message=False explicite pour supprimer l'avertissement PTBUserWarning
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(ads_add_start, pattern="^ads_add_start$")],
         states={
@@ -965,6 +970,7 @@ def main():
         },
         fallbacks=[CallbackQueryHandler(ads_cancel, pattern="^ads_cancel$")],
         allow_reentry=True,
+        per_message=False,
     )
 
     app.add_handler(conv)
