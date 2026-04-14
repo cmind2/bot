@@ -20,22 +20,32 @@ from telegram.ext import (
     filters,
 )
 
+# ══════════════════════════════════════════════════════════════════
+#  ⚙️  KEEP ALIVE — Import du serveur Flask
+# ══════════════════════════════════════════════════════════════════
 from keep_alive import keep_alive
 
+# ══════════════════════════════════════════════════════════════════
+#  ⚙️  CONFIGURATION — Variables d'environnement
+# ══════════════════════════════════════════════════════════════════
 load_dotenv()
 
-BOT_TOKEN     = os.getenv("BOT_TOKEN")
-SUPABASE_URL  = os.getenv("SUPABASE_URL")
-SUPABASE_KEY  = os.getenv("SUPABASE_KEY")
+BOT_TOKEN    = os.getenv("BOT_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_CHAT_ID = list(map(int, filter(None, os.getenv("ADMIN_CHAT_ID", "").split(","))))
 FRAIS_PERCENT = int(os.getenv("FRAIS_PERCENT", "5"))
 
+# Vérification des variables d'environnement
 if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("❌ Variables d'environnement manquantes. Vérifiez votre fichier .env")
 
-# États du ConversationHandler
-AD_TITLE, AD_DESC, AD_ICON, AD_DURATION, AD_REWARD, AD_LINK, AD_CONFIRM = range(7)
+# ── États du ConversationHandler (ajout pub) ──────────────────────
+AD_TITLE, AD_DESC, AD_ICON, AD_DURATION, AD_REWARD, AD_LINK = range(6)
 
+# ══════════════════════════════════════════════════════════════════
+#  INIT
+# ══════════════════════════════════════════════════════════════════
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -191,10 +201,14 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await delete_ad(query, data.replace("ad_delete_", ""))
     elif data.startswith("ad_detail_"):
         await show_ad_detail(query, data.replace("ad_detail_", ""))
+    elif data == "ads_confirm":
+        await ads_confirm(update, ctx)
+    elif data == "ads_cancel":
+        await ads_cancel(update, ctx)
 
 
 # ══════════════════════════════════════════════════════════════════
-#  DÉPÔTS EN ATTENTE
+#  ✅ DÉPÔTS EN ATTENTE
 # ══════════════════════════════════════════════════════════════════
 async def show_deposits_pending(query):
     res = (
@@ -360,7 +374,7 @@ async def reject_deposit(query, dep_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  RETRAITS EN ATTENTE
+#  ✅ RETRAITS EN ATTENTE
 # ══════════════════════════════════════════════════════════════════
 async def show_withdrawals_pending(query):
     res = (
@@ -682,7 +696,7 @@ async def show_stats(query):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  GESTION DES PUBLICITÉS
+#  📢 GESTION DES PUBLICITÉS
 # ══════════════════════════════════════════════════════════════════
 async def show_ads_menu(query):
     await query.edit_message_text(
@@ -778,12 +792,11 @@ async def delete_ad(query, ad_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  AJOUT D'UNE PUB — ConversationHandler (6 étapes) — CORRIGÉ
+#  📢 AJOUT D'UNE PUB — ConversationHandler (6 étapes)
 # ══════════════════════════════════════════════════════════════════
 async def ads_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    ctx.user_data.clear()   # Réinitialise les données à chaque nouveau démarrage
     await query.edit_message_text(
         "➕ <b>Nouvelle publicité — Étape 1/6</b>\n\n"
         "Entrez le <b>titre</b> de la publicité :\n"
@@ -884,8 +897,7 @@ async def ad_get_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Annuler",  callback_data="ads_cancel")],
         ])
     )
-    # CORRECTION : on reste dans la conversation pour attendre la confirmation
-    return AD_CONFIRM
+    return ConversationHandler.END
 
 
 async def ads_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -918,8 +930,6 @@ async def ads_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("❌ Erreur lors de l'ajout.", reply_markup=back_button("menu_ads"))
 
-    return ConversationHandler.END
-
 
 async def ads_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -933,15 +943,16 @@ async def ads_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  MAIN — CORRIGÉ
+#  MAIN
 # ══════════════════════════════════════════════════════════════════
 def main():
+    # ─── Démarrage du serveur keep_alive ───────────────────────────
     keep_alive()
     logger.info("🌐 Serveur keep_alive démarré sur le port 8080")
+    # ───────────────────────────────────────────────────────────────
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # CORRECTION : AD_CONFIRM ajouté dans les états + per_message=False
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(ads_add_start, pattern="^ads_add_start$")],
         states={
@@ -951,24 +962,16 @@ def main():
             AD_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ad_get_duration)],
             AD_REWARD:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ad_get_reward)],
             AD_LINK:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ad_get_link)],
-            # CORRECTION : état pour capturer la confirmation/annulation
-            AD_CONFIRM:  [
-                CallbackQueryHandler(ads_confirm, pattern="^ads_confirm$"),
-                CallbackQueryHandler(ads_cancel,  pattern="^ads_cancel$"),
-            ],
         },
-        fallbacks=[
-            CallbackQueryHandler(ads_cancel, pattern="^ads_cancel$"),
-        ],
+        fallbacks=[CallbackQueryHandler(ads_cancel, pattern="^ads_cancel$")],
         allow_reentry=True,
-        per_message=False,  # CORRECTION : nécessaire pour les callbacks entre messages
     )
 
-    # CORRECTION : ConversationHandler en premier, callback_handler général en dernier
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu",  cmd_menu))
-    # CORRECTION : suppression des handlers en double qui créaient le conflit
+    app.add_handler(CallbackQueryHandler(ads_confirm, pattern="^ads_confirm$"))
+    app.add_handler(CallbackQueryHandler(ads_cancel,  pattern="^ads_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
     async def set_commands(application):
