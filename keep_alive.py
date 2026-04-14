@@ -1,11 +1,20 @@
 from flask import Flask
+from threading import Thread
 
-app = Flask("keep_alive")
+app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "OK", 200
+    return "✅ Bot Admin Mind Cash est en ligne !"
+
+@app.route("/health")
+def health():
+    return {"status": "ok", "bot": "Mind Cash Admin"}, 200
+
+def run():
+    app.run(host="0.0.0.0", port=8080)
 
 def keep_alive():
-    """Lance Flask directement dans le thread appelant (daemon thread géré par bot.py)."""
-    app.run(host="0.0.0.0", port=8080)
+    t = Thread(target=run)
+    t.daemon = True
+    t.start()
