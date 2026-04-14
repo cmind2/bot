@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import threading
@@ -31,13 +32,12 @@ from keep_alive import keep_alive
 # ══════════════════════════════════════════════════════════════════
 load_dotenv()
 
-BOT_TOKEN    = os.getenv("BOT_TOKEN")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BOT_TOKEN     = os.getenv("BOT_TOKEN")
+SUPABASE_URL  = os.getenv("SUPABASE_URL")
+SUPABASE_KEY  = os.getenv("SUPABASE_KEY")
 ADMIN_CHAT_ID = list(map(int, filter(None, os.getenv("ADMIN_CHAT_ID", "").split(","))))
 FRAIS_PERCENT = int(os.getenv("FRAIS_PERCENT", "5"))
 
-# Vérification des variables d'environnement
 if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("❌ Variables d'environnement manquantes. Vérifiez votre fichier .env")
 
@@ -944,20 +944,12 @@ async def ads_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  MAIN
+#  MAIN — CORRECTION Python 3.14 : asyncio.run() obligatoire
 # ══════════════════════════════════════════════════════════════════
-def main():
-    # ─── Démarrage du serveur keep_alive dans un thread daemon ────
-    # CORRECTION : Flask tourne dans un thread séparé pour ne pas
-    # bloquer la boucle asyncio de python-telegram-bot (Python 3.10+)
-    t = threading.Thread(target=keep_alive, daemon=True)
-    t.start()
-    logger.info("🌐 Serveur keep_alive démarré dans un thread daemon")
-    # ───────────────────────────────────────────────────────────────
-
+async def main_async():
+    """Cœur asynchrone : construit et lance le bot Telegram."""
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # CORRECTION : per_message=False explicite pour supprimer l'avertissement PTBUserWarning
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(ads_add_start, pattern="^ads_add_start$")],
         states={
@@ -988,7 +980,22 @@ def main():
     app.post_init = set_commands
 
     logger.info("🚀 Bot Admin Mind Cash v2 démarré...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+def main():
+    # ── Keep-alive Flask dans un thread daemon ────────────────────
+    # Flask tourne dans son propre thread ; le thread principal reste
+    # libre pour qu'asyncio.run() puisse créer sa propre event loop.
+    t = threading.Thread(target=keep_alive, daemon=True)
+    t.start()
+    logger.info("🌐 Serveur keep_alive démarré dans un thread daemon")
+
+    # ── CORRECTION PRINCIPALE ─────────────────────────────────────
+    # Python 3.10+ (et surtout 3.14) ne crée plus d'event loop
+    # implicitement dans le thread principal.
+    # asyncio.run() en crée une propre, puis la détruit proprement.
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
