@@ -1,7 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║         MINDCASH — BOT ADMIN COMPLET v3                         ║
-║  Toutes les fonctionnalités du site couvertes                   ║
+║         MINDCASH — BOT ADMIN COMPLET v4                         ║
+║  ✅ Correction bug produits (NULL vs False)                     ║
+║  ✅ Ajout produits depuis le bot                                 ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 Installation :
@@ -57,7 +58,9 @@ if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
     AD_TITLE, AD_DESC, AD_ICON, AD_DURATION, AD_REWARD, AD_LINK,
     SEARCH_INPUT,
     CREDIT_USER_ID, CREDIT_TYPE, CREDIT_AMOUNT,
-) = range(10)
+    # ✅ NOUVEAUX états pour l'ajout de produit admin
+    PROD_TITLE, PROD_DESC, PROD_PRICE, PROD_LINK, PROD_COVER,
+) = range(15)
 
 # ══════════════════════════════════════════════════════════════════
 #  INIT
@@ -103,36 +106,33 @@ def calc_frais(amount: int) -> tuple[int, int]:
 # ══════════════════════════════════════════════════════════════════
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        # ── Dépôts & Retraits principaux ──
         [
             InlineKeyboardButton("📥 Dépôts",           callback_data="menu_deposits_pending"),
             InlineKeyboardButton("💳 Retraits",          callback_data="menu_withdrawals_pending"),
         ],
-        # ── Boutique ──
         [
             InlineKeyboardButton("🛒 Recharges boutique", callback_data="menu_shop_deposits"),
             InlineKeyboardButton("💸 Retraits boutique",  callback_data="menu_shop_withdrawals"),
         ],
-        # ── Gains ventes ──
         [
             InlineKeyboardButton("💜 Retraits gains ventes", callback_data="menu_gains_withdrawals"),
         ],
-        # ── Produits ──
         [
             InlineKeyboardButton("📦 Produits à valider", callback_data="menu_products_pending"),
             InlineKeyboardButton("🛍 Produits actifs",    callback_data="menu_products_active"),
         ],
-        # ── Comptes ──
+        [
+            # ✅ Nouveau bouton : Ajouter un produit admin
+            InlineKeyboardButton("➕ Ajouter un produit", callback_data="menu_add_product"),
+        ],
         [
             InlineKeyboardButton("🔓 Comptes à activer", callback_data="menu_inactive_accounts"),
             InlineKeyboardButton("🔍 Chercher un user",  callback_data="menu_search_user"),
         ],
-        # ── Historiques ──
         [
             InlineKeyboardButton("📋 Historique dépôts",   callback_data="menu_deposits_history"),
             InlineKeyboardButton("📋 Historique retraits",  callback_data="menu_withdrawals_history"),
         ],
-        # ── Autres ──
         [
             InlineKeyboardButton("📢 Publicités",   callback_data="menu_ads"),
             InlineKeyboardButton("📊 Statistiques", callback_data="menu_stats"),
@@ -152,7 +152,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Accès refusé.")
         return
     await update.message.reply_text(
-        "👋 <b>Bot Admin Mind Cash v3</b>\n\nMenu complet ⬇️",
+        "👋 <b>Bot Admin Mind Cash v4</b>\n\nMenu complet ⬇️",
         parse_mode="HTML", reply_markup=main_keyboard()
     )
 
@@ -211,10 +211,15 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── Produits ──────────────────────────────────────────────────
     elif d == "menu_products_pending":     await show_products_pending(query)
     elif d == "menu_products_active":      await show_products_active(query)
+    elif d == "menu_add_product":          await add_product_start(query, ctx)   # ✅ NOUVEAU
     elif d.startswith("prod_approve_"):    await approve_product(query, d[13:])
     elif d.startswith("prod_reject_"):     await reject_product(query, d[12:])
     elif d.startswith("prod_delete_"):     await delete_product(query, d[12:])
     elif d.startswith("prod_detail_"):     await show_product_detail(query, d[12:])
+    elif d == "prod_confirm":              await add_product_confirm(query, ctx)  # ✅ NOUVEAU
+    elif d == "prod_cancel":                                                       # ✅ NOUVEAU
+        ctx.user_data.clear()
+        await query.edit_message_text("❌ Ajout annulé.", reply_markup=back())
 
     # ── Comptes ───────────────────────────────────────────────────
     elif d == "menu_inactive_accounts":    await show_inactive_accounts(query)
@@ -444,7 +449,6 @@ async def reject_withdrawal(query, wit_id):
     w = res.data
     if not w:
         await query.edit_message_text("❌ Introuvable.", reply_markup=back()); return
-    # Rembourser le solde
     _credit_balance(w["user_id"], w["amount"], "refund", {"withdrawal_id": wit_id})
     sb.table("withdrawals").update({"status": "rejected"}).eq("id", wit_id).execute()
     sb.table("transactions").update({"status": "failed"}) \
@@ -592,7 +596,6 @@ async def reject_shop_withdrawal(query, sw_id):
     sw = res.data
     if not sw:
         await query.edit_message_text("❌ Introuvable.", reply_markup=back()); return
-    # Rembourser shop_balance
     u = sw.get("users") or {}
     new_bal = (u.get("shop_balance") or 0) + sw["amount"]
     sb.table("users").update({"shop_balance": new_bal}).eq("id", sw["user_id"]).execute()
@@ -670,7 +673,6 @@ async def reject_gains_withdrawal(query, gw_id):
     gw = res.data
     if not gw:
         await query.edit_message_text("❌ Introuvable.", reply_markup=back()); return
-    # Rembourser gains_balance
     u = gw.get("users") or {}
     new_bal = (u.get("gains_balance") or 0) + gw["amount"]
     sb.table("users").update({"gains_balance": new_bal}).eq("id", gw["user_id"]).execute()
@@ -688,13 +690,23 @@ async def reject_gains_withdrawal(query, gw_id):
 # ══════════════════════════════════════════════════════════════════
 #  ⑥ PRODUITS  (products)
 # ══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────
+# ✅ CORRECTION BUG : Supabase retourne NULL (pas False) pour les
+#    nouveaux produits. .eq("is_approved", False) ne remonte PAS
+#    les lignes avec NULL. On utilise .is_() pour matcher NULL aussi.
+# ─────────────────────────────────────────────────────────────────
 async def show_products_pending(query):
+    # On récupère TOUS les produits non approuvés, puis on filtre côté Python
+    # pour inclure is_approved = False ET is_approved = NULL
     res = (sb.table("products")
            .select("*, users(name,ref_code)")
-           .eq("is_approved", False)
-           .eq("is_rejected", False)
-           .order("created_at", desc=False).execute())
-    items = res.data or []
+           .neq("is_approved", True)      # exclut uniquement True
+           .neq("is_rejected", True)      # exclut uniquement True
+           .order("created_at", desc=False)
+           .execute())
+    # Filtre supplémentaire : exclure les produits approuvés (double sécurité)
+    items = [p for p in (res.data or []) if not p.get("is_approved") and not p.get("is_rejected")]
     if not items:
         await query.edit_message_text("✅ <b>Aucun produit à valider</b>",
                                       parse_mode="HTML", reply_markup=back())
@@ -707,14 +719,14 @@ async def show_products_pending(query):
         text += (f"━━━━━━━━━━━━━━━━━━━━\n"
                  f"📌 <b>{p.get('title','—')}</b>\n"
                  f"💰 {fmt(p.get('price',0))} · 💜 Vendeur : {fmt(gains)}\n"
-                 f"👤 {u.get('name','—')} ({u.get('ref_code','—')})\n"
-                 f"🔗 {p.get('link','—')[:40]}\n"
+                 f"👤 {u.get('name','admin')} ({u.get('ref_code','admin')})\n"
+                 f"🔗 {str(p.get('link','—'))[:40]}\n"
                  f"📅 {fmt_date(p.get('created_at',''))}\n")
         pid = str(p["id"])
         buttons.append([
-            InlineKeyboardButton(f"✅ Approuver", callback_data=f"prod_approve_{pid}"),
-            InlineKeyboardButton("❌ Rejeter",    callback_data=f"prod_reject_{pid}"),
-            InlineKeyboardButton("ℹ️",            callback_data=f"prod_detail_{pid}"),
+            InlineKeyboardButton("✅ Approuver", callback_data=f"prod_approve_{pid}"),
+            InlineKeyboardButton("❌ Rejeter",   callback_data=f"prod_reject_{pid}"),
+            InlineKeyboardButton("ℹ️",           callback_data=f"prod_detail_{pid}"),
         ])
     buttons.append([InlineKeyboardButton("⬅️ Menu", callback_data="menu_main")])
     await query.edit_message_text(text, parse_mode="HTML",
@@ -734,11 +746,13 @@ async def show_products_active(query):
     buttons = []
     for p in items:
         u = p.get("users") or {}
-        text += f"• <b>{p.get('title','—')}</b> — {fmt(p.get('price',0))} — {u.get('name','admin')}\n"
+        owner = u.get("name") or "Admin"
+        text += f"• <b>{p.get('title','—')}</b> — {fmt(p.get('price',0))} — {owner}\n"
         pid = str(p["id"])
         buttons.append([
             InlineKeyboardButton(f"🗑️ Supprimer : {p.get('title','')[:20]}", callback_data=f"prod_delete_{pid}"),
         ])
+    buttons.append([InlineKeyboardButton("➕ Ajouter un produit", callback_data="menu_add_product")])
     buttons.append([InlineKeyboardButton("⬅️ Menu", callback_data="menu_main")])
     await query.edit_message_text(text, parse_mode="HTML",
                                   reply_markup=InlineKeyboardMarkup(buttons))
@@ -753,11 +767,12 @@ async def show_product_detail(query, prod_id):
     status = "✅ Approuvé" if p.get("is_approved") else ("❌ Rejeté" if p.get("is_rejected") else "⏳ En attente")
     text = (f"📦 <b>Produit #{prod_id[:8]}</b>\n\n"
             f"📌 <b>{p.get('title','—')}</b>\n"
+            f"📝 {p.get('description','—')}\n"
             f"💰 Prix : {fmt(p.get('price',0))}\n"
             f"💜 Gains vendeur ({VENDOR_PCT}%) : {fmt(gains)}\n"
             f"🔗 Lien : {p.get('link','—')}\n"
             f"🖼 Cover : {p.get('cover') or 'Aucune'}\n"
-            f"👤 Vendeur : {u.get('name','admin')} ({u.get('ref_code','—')})\n"
+            f"👤 Vendeur : {u.get('name','admin')} ({u.get('ref_code','admin')})\n"
             f"📊 Statut : {status}\n"
             f"📅 {fmt_date(p.get('created_at',''))}")
     btns = []
@@ -796,6 +811,69 @@ async def delete_product(query, prod_id):
     sb.table("products").delete().eq("id", prod_id).execute()
     await query.answer("🗑️ Produit supprimé !", show_alert=True)
     await show_products_active(query)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  ⑥bis AJOUT PRODUIT DEPUIS LE BOT (admin)  ✅ NOUVEAU
+# ══════════════════════════════════════════════════════════════════
+async def add_product_start(query, ctx):
+    """Lance le flux d'ajout de produit admin."""
+    ctx.user_data.clear()
+    ctx.user_data["prod_step"] = PROD_TITLE
+    await query.edit_message_text(
+        "➕ <b>Ajouter un produit — Étape 1/5</b>\n\n"
+        "📌 <b>Titre</b> du produit :\n"
+        "<i>(ex: Formation Marketing Digital)</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Annuler", callback_data="prod_cancel")
+        ]]))
+
+async def add_product_confirm(query, ctx):
+    """Insère le produit dans Supabase après confirmation."""
+    d = ctx.user_data
+    title = d.get("prod_title", "")
+    desc  = d.get("prod_desc", "")
+    price = d.get("prod_price", 0)
+    link  = d.get("prod_link")
+    cover = d.get("prod_cover")
+
+    if not title or not price:
+        await query.edit_message_text("❌ Données incomplètes.", reply_markup=back()); return
+
+    gains = round(price * VENDOR_PCT / 100)
+
+    res = sb.table("products").insert({
+        "title":       title,
+        "description": desc,
+        "price":       price,
+        "link":        link,
+        "cover":       cover,
+        "is_approved": True,   # Produit admin → directement approuvé
+        "is_rejected": False,
+        "user_id":     None,   # NULL = produit admin (pas de vendeur utilisateur)
+    }).execute()
+
+    ctx.user_data.clear()
+
+    if res.data:
+        await query.edit_message_text(
+            f"✅ <b>Produit ajouté et publié !</b>\n\n"
+            f"📌 <b>{title}</b>\n"
+            f"💰 Prix : {fmt(price)}\n"
+            f"💜 Gains vendeur : {fmt(gains)}\n"
+            f"🔗 Lien : {link or 'Aucun'}\n"
+            f"🖼 Cover : {cover or 'Aucune'}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛍 Voir produits actifs", callback_data="menu_products_active")],
+                [InlineKeyboardButton("➕ Ajouter un autre",     callback_data="menu_add_product")],
+                [InlineKeyboardButton("⬅️ Menu",                 callback_data="menu_main")],
+            ]))
+    else:
+        await query.edit_message_text(
+            "❌ <b>Erreur lors de l'ajout.</b>\nVérifie ta connexion Supabase.",
+            parse_mode="HTML", reply_markup=back())
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -910,7 +988,7 @@ async def show_all_transactions(query):
     icons = {"deposit":"📥","withdraw":"💳","bonus":"🎁","ad":"📢",
              "mission":"🎯","referral":"👥","activation":"🔓",
              "shop_deposit":"🛒","shop_withdraw":"💸",
-             "sale_gain":"💜","gains_withdraw":"💜"}
+             "sale_gain":"💜","gains_withdraw":"💜","manual_credit":"💰"}
     text = "🔄 <b>Toutes transactions (20 dernières)</b>\n\n"
     for tx in txs:
         u = tx.get("users") or {}
@@ -924,38 +1002,31 @@ async def show_all_transactions(query):
 #  ⑨ STATISTIQUES COMPLÈTES
 # ══════════════════════════════════════════════════════════════════
 async def show_stats(query):
-    # Utilisateurs
     u_res  = sb.table("users").select("id,is_active", count="exact").execute()
     u_all  = u_res.count or 0
     u_act  = sum(1 for u in (u_res.data or []) if u.get("is_active"))
 
-    # Dépôts
     d_all  = sb.table("deposits").select("amount,status").execute().data or []
     d_ok   = sum(x["amount"] for x in d_all if x["status"] == "success")
     d_pend = sum(1 for x in d_all if x["status"] == "pending")
 
-    # Retraits principaux
     w_all  = sb.table("withdrawals").select("amount,net_amount,status").execute().data or []
     w_ok   = sum(x.get("net_amount") or (x["amount"] - round(x["amount"]*FRAIS_PERCENT/100))
                  for x in w_all if x["status"] == "success")
     w_pend = sum(1 for x in w_all if x["status"] == "pending")
 
-    # Boutique — recharges
     sd_all = sb.table("shop_deposits").select("amount,status").execute().data or []
     sd_ok  = sum(x["amount"] for x in sd_all if x["status"] == "success")
     sd_pnd = sum(1 for x in sd_all if x["status"] == "pending")
 
-    # Boutique — retraits
     sw_all = sb.table("shop_withdrawals").select("amount,status").execute().data or []
     sw_ok  = sum(x["amount"] for x in sw_all if x["status"] == "success")
     sw_pnd = sum(1 for x in sw_all if x["status"] == "pending")
 
-    # Gains ventes
     gw_all = sb.table("gains_withdrawals").select("amount,status").execute().data or []
     gw_ok  = sum(x["amount"] for x in gw_all if x["status"] == "success")
     gw_pnd = sum(1 for x in gw_all if x["status"] == "pending")
 
-    # Transactions gains distribués
     tx_all    = sb.table("transactions").select("type,amount,status").execute().data or []
     bonus_t   = sum(x["amount"] for x in tx_all if x["type"]=="bonus"    and x["status"]=="success")
     ad_t      = sum(x["amount"] for x in tx_all if x["type"]=="ad"       and x["status"]=="success")
@@ -963,9 +1034,10 @@ async def show_stats(query):
     ref_t     = sum(x["amount"] for x in tx_all if x["type"]=="referral" and x["status"]=="success")
     sales_t   = sum(x["amount"] for x in tx_all if x["type"]=="sale_gain"and x["status"]=="success")
 
-    # Produits
     prods_ok  = len(sb.table("products").select("id").eq("is_approved",True).execute().data or [])
-    prods_pnd = len(sb.table("products").select("id").eq("is_approved",False).eq("is_rejected",False).execute().data or [])
+    # ✅ Utilise la même logique corrigée que show_products_pending
+    all_prods = sb.table("products").select("id,is_approved,is_rejected").execute().data or []
+    prods_pnd = sum(1 for p in all_prods if not p.get("is_approved") and not p.get("is_rejected"))
 
     ads_act   = len(sb.table("ads").select("id").eq("is_active",True).execute().data or [])
 
@@ -1202,11 +1274,90 @@ async def credit_confirm(query, ctx):
         parse_mode="HTML",
         reply_markup=back())
 
-# Message handler pour les étapes de crédit et de recherche
+
+# ══════════════════════════════════════════════════════════════════
+#  ⑬ GESTIONNAIRE DE MESSAGES TEXTE UNIFIÉ
+# ══════════════════════════════════════════════════════════════════
 async def text_message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-    step = ctx.user_data.get("credit_step") or ctx.user_data.get("search_step")
+
+    step = ctx.user_data.get("credit_step") or ctx.user_data.get("search_step") or ctx.user_data.get("broadcast_step")
+    prod_step = ctx.user_data.get("prod_step")
+
+    # ── Ajout produit admin ──────────────────────────────────────
+    if prod_step is not None:
+        txt = update.message.text.strip()
+
+        if prod_step == PROD_TITLE:
+            ctx.user_data["prod_title"] = txt
+            ctx.user_data["prod_step"]  = PROD_DESC
+            await update.message.reply_text(
+                f"✅ Titre : <b>{txt}</b>\n\n"
+                f"➕ <b>Étape 2/5</b> — Description du produit :\n"
+                f"<i>(ex: Apprenez les bases du marketing...)</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="prod_cancel")]]))
+
+        elif prod_step == PROD_DESC:
+            ctx.user_data["prod_desc"] = txt
+            ctx.user_data["prod_step"] = PROD_PRICE
+            await update.message.reply_text(
+                f"✅ Description enregistrée.\n\n"
+                f"➕ <b>Étape 3/5</b> — Prix en FCFA :\n"
+                f"<i>(ex: 5000)</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="prod_cancel")]]))
+
+        elif prod_step == PROD_PRICE:
+            try:
+                price = int(txt.replace(" ", "").replace(",", ""))
+                if price <= 0:
+                    raise ValueError
+                ctx.user_data["prod_price"] = price
+                ctx.user_data["prod_step"]  = PROD_LINK
+                gains = round(price * VENDOR_PCT / 100)
+                await update.message.reply_text(
+                    f"✅ Prix : <b>{fmt(price)}</b> · Gains vendeur : {fmt(gains)}\n\n"
+                    f"➕ <b>Étape 4/5</b> — Lien du produit (URL ou tapez <b>aucun</b>) :\n"
+                    f"<i>(ex: https://exemple.com/produit)</i>",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="prod_cancel")]]))
+            except ValueError:
+                await update.message.reply_text("❌ Prix invalide. Entrez un nombre entier positif (ex: 5000).")
+
+        elif prod_step == PROD_LINK:
+            ctx.user_data["prod_link"] = None if txt.lower() in ("aucun","non","-","") else txt
+            ctx.user_data["prod_step"] = PROD_COVER
+            await update.message.reply_text(
+                f"✅ Lien enregistré.\n\n"
+                f"➕ <b>Étape 5/5</b> — URL de l'image de couverture (ou tapez <b>aucun</b>) :\n"
+                f"<i>(ex: https://exemple.com/image.jpg)</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="prod_cancel")]]))
+
+        elif prod_step == PROD_COVER:
+            ctx.user_data["prod_cover"] = None if txt.lower() in ("aucun","non","-","") else txt
+            ctx.user_data.pop("prod_step", None)
+            # Affichage du récapitulatif avant confirmation
+            d = ctx.user_data
+            gains = round((d.get("prod_price", 0)) * VENDOR_PCT / 100)
+            await update.message.reply_text(
+                f"📦 <b>Récapitulatif du produit</b>\n\n"
+                f"📌 <b>{d.get('prod_title','—')}</b>\n"
+                f"📝 {d.get('prod_desc','—')}\n"
+                f"💰 Prix : <b>{fmt(d.get('prod_price',0))}</b>\n"
+                f"💜 Gains vendeur ({VENDOR_PCT}%) : {fmt(gains)}\n"
+                f"🔗 Lien : {d.get('prod_link') or 'Aucun'}\n"
+                f"🖼 Cover : {d.get('prod_cover') or 'Aucune'}\n\n"
+                f"✅ Ce produit sera publié <b>immédiatement</b>.\n"
+                f"Confirmer ?",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Publier",  callback_data="prod_confirm")],
+                    [InlineKeyboardButton("❌ Annuler", callback_data="prod_cancel")],
+                ]))
+        return  # ← Fin du bloc ajout produit
 
     # ── Recherche utilisateur ────────────────────────────────────
     if step == "search_input":
@@ -1229,8 +1380,8 @@ async def text_message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 text, parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Activer", callback_data=f"acc_activate_{uid}"),
-                     InlineKeyboardButton("💰 Créditer", callback_data=f"credit_uid_{uid}_{u.get('name','')}"),
+                    [InlineKeyboardButton("✅ Activer",   callback_data=f"acc_activate_{uid}"),
+                     InlineKeyboardButton("💰 Créditer",  callback_data=f"credit_uid_{uid}_{u.get('name','')}"),
                     ],
                     [InlineKeyboardButton("⬅️ Menu", callback_data="menu_main")],
                 ]))
@@ -1302,7 +1453,7 @@ async def text_message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  ⑬ RECHERCHE UTILISATEUR
+#  ⑭ RECHERCHE UTILISATEUR
 # ══════════════════════════════════════════════════════════════════
 async def search_user_start(query, ctx):
     ctx.user_data["search_step"] = "search_input"
@@ -1314,7 +1465,7 @@ async def search_user_start(query, ctx):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  ⑭ DIFFUSION (BROADCAST)
+#  ⑮ DIFFUSION (BROADCAST)
 # ══════════════════════════════════════════════════════════════════
 async def broadcast_start(query, ctx):
     ctx.user_data["broadcast_step"] = "broadcast_input"
@@ -1335,11 +1486,10 @@ async def broadcast_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Message vide.", reply_markup=back()); return
     res = sb.table("users").select("id", count="exact").eq("is_active", True).execute()
     count = res.count or 0
-    # Enregistrer dans une table broadcasts (optionnelle)
     try:
         sb.table("broadcasts").insert({"message": msg, "sent_at": datetime.utcnow().isoformat()}).execute()
     except Exception:
-        pass  # La table peut ne pas exister
+        pass
     ctx.user_data.clear()
     await query.edit_message_text(
         f"✅ <b>Message enregistré !</b>\n\n"
@@ -1353,7 +1503,6 @@ async def broadcast_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  HELPER INTERNE — crédit de solde + transaction
 # ══════════════════════════════════════════════════════════════════
 def _credit_balance(uid: str, amount: int, tx_type: str, meta: dict):
-    """Incrémente users.balance et insère une transaction."""
     cur = sb.table("users").select("balance").eq("id", uid).single().execute().data or {}
     new_val = (cur.get("balance") or 0) + amount
     sb.table("users").update({"balance": new_val}).eq("id", uid).execute()
@@ -1365,15 +1514,14 @@ def _credit_balance(uid: str, amount: int, tx_type: str, meta: dict):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  GESTION DES CALLBACKS CREDIT_UID (depuis recherche)
+#  CALLBACKS CREDIT_UID (depuis recherche)
 # ══════════════════════════════════════════════════════════════════
 async def callback_credit_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Déclenché par credit_uid_<uuid>_<name>"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    parts = query.data.split("_", 3)  # credit, uid, <uuid>, <name>
+    parts = query.data.split("_", 3)
     if len(parts) < 4:
         await query.edit_message_text("❌ Erreur.", reply_markup=back()); return
     uid   = parts[2]
@@ -1430,9 +1578,9 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu",  cmd_menu))
 
-    # ── Callbacks spéciaux (doivent être avant le router général) ─
-    app.add_handler(CallbackQueryHandler(ads_confirm,        pattern="^ads_confirm$"))
-    app.add_handler(CallbackQueryHandler(ads_cancel,         pattern="^ads_cancel$"))
+    # ── Callbacks spéciaux (priorité haute) ───────────────────────
+    app.add_handler(CallbackQueryHandler(ads_confirm,         pattern="^ads_confirm$"))
+    app.add_handler(CallbackQueryHandler(ads_cancel,          pattern="^ads_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_credit_uid, pattern=r"^credit_uid_"))
     app.add_handler(CallbackQueryHandler(
         lambda u, c: credit_type_chosen(u.callback_query, c, u.callback_query.data[12:]),
@@ -1447,7 +1595,7 @@ def main():
     # ── Router général ────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # ── Messages texte (crédit, recherche, broadcast) ─────────────
+    # ── Messages texte (crédit, recherche, broadcast, ajout produit) ──
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     async def set_commands(application):
@@ -1457,7 +1605,7 @@ def main():
         ])
     app.post_init = set_commands
 
-    logger.info("🚀 MindCash Admin Bot v3 démarré")
+    logger.info("🚀 MindCash Admin Bot v4 démarré")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
